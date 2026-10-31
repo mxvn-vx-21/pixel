@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Wall</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><rect width='10' height='10' fill='%23ff5c8a'/><rect x='5' width='5' height='5' fill='%231d1a3b'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@700&family=DM+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#e6e2ff; --ink:#1d1a3b; --accent:#ff5c8a; --panel:#f6f4ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink);
+         font:16px/1.5 "DM Sans",system-ui,sans-serif; display:grid; place-items:center; padding:20px; }
+  main { width:min(960px,100%); }
+  header { display:flex; justify-content:space-between; align-items:end; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font:700 clamp(28px,6vw,48px)/1 Silkscreen,monospace; margin:0; }
+  header p { margin:4px 0 0; max-width:42ch; }
+  #online { font-weight:600; display:flex; align-items:center; gap:8px; }
+  #online::before { content:""; width:10px; height:10px; background:var(--accent); border-radius:50%; }
+  #online.off::before { background:#999; }
+  .frame { background:var(--ink); padding:8px; box-shadow:8px 8px 0 var(--accent); }
+  canvas { display:block; width:100%; image-rendering:pixelated; cursor:crosshair; touch-action:none; background:#fff; }
+  .bar { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:26px; }
+  #palette { display:grid; grid-template-columns:repeat(16,1fr); gap:4px; flex:1 1 360px; }
+  #palette button { aspect-ratio:1; border:2px solid var(--ink); padding:0; cursor:pointer; }
+  #palette button[aria-pressed=true] { outline:3px solid var(--accent); outline-offset:2px; }
+  button.act { font:600 14px "DM Sans",sans-serif; background:var(--panel); color:var(--ink);
+               border:2px solid var(--ink); padding:8px 14px; cursor:pointer; }
+  button.act:hover, button.act:focus-visible { background:var(--accent); }
+  #status { min-height:1.5em; margin:10px 0 0; font-size:14px; }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Pixel Wall</h1>
+      <p>One shared canvas for everyone who visits. Pick a color, click to paint. Changes appear for everyone instantly.</p>
+    </div>
+    <div id="online" class="off">connecting…</div>
+  </header>
+
+  <div class="frame"><canvas id="cv" aria-label="Shared pixel canvas"></canvas></div>
+
+  <div class="bar">
+    <div id="palette" role="group" aria-label="Color palette"></div>
+    <button class="act" id="save">Save as PNG</button>
+  </div>
+  <p id="status" role="status"></p>
+</main>
+
+<script>
+const COLORS = ["#ffffff","#c2c3c7","#5f574f","#1d1a3b","#ff004d","#ff5c8a","#ffa300","#ffec27",
+                "#00e436","#008751","#29adff","#1d2b53","#83769c","#ab5236","#ffccaa","#7e2553"];
+const S = 16;                       // pixels per cell on the canvas
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const $online = document.getElementById("online"), $status = document.getElementById("status");
+let W = 0, H = 0, board = [], color = 4, hover = null, ws, ripples = [];
+
+// palette
+const pal = document.getElementById("palette");
+COLORS.forEach((hex, i) => {
+  const b = document.createElement("button");
+  b.style.background = hex; b.title = hex; b.setAttribute("aria-label", "Color " + (i + 1));
+  b.setAttribute("aria-pressed", i === color);
+  b.onclick = () => { color = i; [...pal.children].forEach((x, j) => x.setAttribute("aria-pressed", j === i)); };
+  pal.appendChild(b);
+});
+
+// websocket with auto-reconnect
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => $online.classList.remove("off");
+  ws.onclose = () => { $online.classList.add("off"); $online.textContent = "reconnecting…"; setTimeout(connect, 1500); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === "init") {
+      W = m.w; H = m.h; board = [...m.board].map(ch => parseInt(ch, 16));
+      cv.width = W * S; cv.height = H * S;
+    } else if (m.t === "px") {
+      board[m.y * W + m.x] = m.c;
+      ripples.push({ x: m.x, y: m.y, t: performance.now() });
+    } else if (m.t === "online") {
+      $online.textContent = m.n + (m.n === 1 ? " painter here" : " painters here");
+    } else if (m.t === "slow") {
+      $status.textContent = "Easy there. One pixel every quarter second.";
+    }
+  };
+}
+connect();
+
+function cell(ev) {
+  const r = cv.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / r.width * W);
+  const y = Math.floor((ev.clientY - r.top) / r.height * H);
+  return x >= 0 && y >= 0 && x < W && y < H ? { x, y } : null;
+}
+function paint(ev) {
+  const c = cell(ev); if (!c || ws?.readyState !== 1) return;
+  if (board[c.y * W + c.x] === color) return;
+  $status.textContent = "";
+  ws.send(JSON.stringify({ t: "set", x: c.x, y: c.y, c: color }));
+  board[c.y * W + c.x] = color; // optimistic; the server broadcast confirms it
+}
+let down = false;
+cv.addEventListener("pointerdown", (e) => { down = true; paint(e); });
+addEventListener("pointerup", () => down = false);
+cv.addEventListener("pointermove", (e) => { hover = cell(e); if (down) paint(e); });
+cv.addEventListener("pointerleave", () => hover = null);
+
+document.getElementById("save").onclick = () => {
+  const a = document.createElement("a");
+  a.download = "pixel-wall.png"; a.href = cv.toDataURL("image/png"); a.click();
+};
+
+// render loop: board + hover preview + ripple on every new pixel
+function frame(now) {
+  if (W) {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      ctx.fillStyle = COLORS[board[y * W + x]]; ctx.fillRect(x * S, y * S, S, S);
+    }
+    if (hover) { ctx.globalAlpha = .55; ctx.fillStyle = COLORS[color]; ctx.fillRect(hover.x * S, hover.y * S, S, S); ctx.globalAlpha = 1; }
+    ripples = ripples.filter(r => now - r.t < 500);
+    for (const r of ripples) {
+      const p = (now - r.t) / 500;
+      ctx.strokeStyle = `rgba(255,92,138,${1 - p})`; ctx.lineWidth = 2;
+      const g = p * S * 1.5; ctx.strokeRect(r.x * S - g, r.y * S - g, S + g * 2, S + g * 2);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

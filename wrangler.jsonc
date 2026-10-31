@@ -1,0 +1,10 @@
+{
+  "name": "pixel-wall",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  "assets": { "directory": "./public" },
+  "durable_objects": {
+    "bindings": [{ "name": "BOARD", "class_name": "PixelBoard" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PixelBoard"] }]
+}
